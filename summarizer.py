@@ -5,6 +5,8 @@ import logging
 from collections import Counter
 import re
 import subprocess
+from tqdm import tqdm
+import time
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -77,25 +79,38 @@ class MediaSummarizer:
             raise
 
     def transcribe(self, audio_path):
-        """Распознавание речи"""
+        """Распознавание речи с красивым прогресс-баром"""
         logger.info("🎤 Распознавание речи...")
 
-        try:
-            result = self.model.transcribe(
-                audio_path,
-                language='ru',
-                fp16=False
-            )
+        # Создаем прогресс-бар
+        with tqdm(total=100, desc="Прогресс", unit="%", ncols=80) as pbar:
+            # Показываем начало
+            pbar.set_description("🎤 Загрузка аудио")
+            pbar.update(10)
 
-            text = result['text'].strip()
-            words_count = len(text.split())
-            logger.info(f"✅ Распознано {words_count} слов")
+            try:
+                # Само распознавание
+                result = self.model.transcribe(
+                    audio_path,
+                    language='ru',
+                    fp16=False,
+                    verbose=False  # Выключаем встроенный вывод
+                )
 
-            return text, result.get('segments', [])
+                # Обновляем прогресс
+                pbar.update(90)
+                pbar.set_description("✅ Готово")
 
-        except Exception as e:
-            logger.error(f"❌ Ошибка транскрибации: {e}")
-            raise
+            except Exception as e:
+                pbar.set_description("❌ Ошибка")
+                logger.error(f"Ошибка транскрибации: {e}")
+                raise
+
+        text = result['text'].strip()
+        words_count = len(text.split())
+        logger.info(f"✅ Распознано {words_count} слов")
+
+        return text, result.get('segments', [])
 
     def summarize_text(self, text):
         """Создание краткого конспекта"""
