@@ -3,7 +3,7 @@ TOKEN = "8421381534:AAEua7ZSdk2Dv_JGQJ2FnrzdDkd_yvqIcqk"
 # Настройки
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB (ограничение Telegram)
 SUPPORTED_FORMATS = ['.mp3', '.mp4', '.wav', '.ogg', '.m4a', '.avi']
-MODEL_SIZE = "tiny"  # tiny, base, small, medium
+MODEL_SIZE = "small"  # tiny, base, small, medium
 
 # Тексты для бота
 WELCOME_TEXT = """

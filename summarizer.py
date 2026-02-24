@@ -1,12 +1,11 @@
-# summarizer.py
 import whisper
 import os
 import tempfile
 import logging
 from collections import Counter
 import re
+import subprocess
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -18,85 +17,73 @@ class MediaSummarizer:
         self.model = whisper.load_model(model_size)
         logger.info("✅ Модель загружена!")
 
-    def extract_audio(self, file_path):
-        """Извлечение аудио из видео с помощью moviepy"""
-        # Если это уже аудио, возвращаем как есть
-        if file_path.lower().endswith(('.mp3', '.wav', '.ogg', '.m4a')):
-            logger.info("Файл уже является аудио")
-            return file_path
+        # Проверяем ffmpeg
+        self._check_ffmpeg()
 
-        logger.info("Извлечение аудио из видео...")
+    def _check_ffmpeg(self):
+        """Проверка наличия ffmpeg"""
+        try:
+            result = subprocess.run(['ffmpeg', '-version'],
+                                    capture_output=True, text=True)
+            if result.returncode == 0:
+                logger.info("✅ FFmpeg найден")
+                return True
+            else:
+                logger.error("❌ FFmpeg не работает")
+                return False
+        except:
+            logger.error("❌ FFmpeg не установлен")
+            return False
+
+    def extract_audio_from_video(self, video_path):
+        """Извлечение аудио из видео через ffmpeg"""
+        logger.info(f"🎬 Извлечение аудио из видео...")
+
+        # Создаем временный WAV файл
+        temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        temp_audio.close()
 
         try:
-            from moviepy.editor import VideoFileClip
-
-            # Создаем временный файл для аудио
-            temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-            temp_audio.close()
-
-            # Загружаем видео
-            video = VideoFileClip(file_path)
-
-            # Извлекаем аудио - убираем problematic параметры
-            video.audio.write_audiofile(temp_audio.name)
-
-            # Закрываем видео
-            video.close()
-
-            logger.info(f"✅ Аудио извлечено: {temp_audio.name}")
-            return temp_audio.name
-
-        except ImportError:
-            logger.error("MoviePy не установлен. Установите: pip install moviepy")
-            raise Exception("MoviePy не установлен")
-        except Exception as e:
-            logger.error(f"Ошибка извлечения аудио: {e}")
-            # Пробуем альтернативный метод
-            return self._extract_audio_alternative(file_path)
-
-    def _extract_audio_alternative(self, file_path):
-        """Альтернативный метод извлечения аудио"""
-        try:
-            # Пробуем использовать ffmpeg напрямую
-            import subprocess
-
-            temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-            temp_audio.close()
-
             # Команда ffmpeg для извлечения аудио
             cmd = [
                 'ffmpeg',
-                '-i', file_path,
-                '-vn',  # Без видео
-                '-acodec', 'pcm_s16le',  # Кодек для WAV
-                '-ar', '16000',  # Частота 16kHz
-                '-ac', '1',  # Моно
-                '-y',  # Перезаписывать
+                '-i', video_path,
+                '-vn',
+                '-acodec', 'pcm_s16le',
+                '-ar', '16000',
+                '-ac', '1',
+                '-y',
                 temp_audio.name
             ]
 
+            # Запускаем ffmpeg
             result = subprocess.run(cmd, capture_output=True, text=True)
 
-            if result.returncode == 0:
-                logger.info(f"✅ Аудио извлечено через ffmpeg: {temp_audio.name}")
-                return temp_audio.name
-            else:
+            if result.returncode != 0:
                 logger.error(f"FFmpeg ошибка: {result.stderr}")
-                raise Exception("FFmpeg не смог извлечь аудио")
+                raise Exception("Ошибка извлечения аудио")
+
+            # Проверяем размер файла
+            if os.path.getsize(temp_audio.name) < 1000:
+                raise Exception("Аудио файл слишком маленький")
+
+            logger.info(f"✅ Аудио извлечено")
+            return temp_audio.name
 
         except Exception as e:
-            logger.error(f"Альтернативный метод тоже не сработал: {e}")
-            raise Exception("Не удалось извлечь аудио из видео")
+            logger.error(f"❌ Ошибка: {e}")
+            if os.path.exists(temp_audio.name):
+                os.unlink(temp_audio.name)
+            raise
 
     def transcribe(self, audio_path):
         """Распознавание речи"""
-        logger.info("Распознавание речи...")
+        logger.info("🎤 Распознавание речи...")
 
         try:
             result = self.model.transcribe(
                 audio_path,
                 language='ru',
-                task='transcribe',
                 fp16=False
             )
 
@@ -107,101 +94,99 @@ class MediaSummarizer:
             return text, result.get('segments', [])
 
         except Exception as e:
-            logger.error(f"Ошибка транскрибации: {e}")
-            raise Exception("Не удалось распознать речь")
+            logger.error(f"❌ Ошибка транскрибации: {e}")
+            raise
 
-    def summarize_text(self, text, max_sentences=3):
+    def summarize_text(self, text):
         """Создание краткого конспекта"""
-        if not text:
-            return ""
+        if not text or len(text) < 50:
+            return text
 
         # Разбиваем на предложения
         sentences = re.split(r'[.!?]+', text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
 
-        if len(sentences) <= max_sentences:
+        if len(sentences) <= 3:
             return text
 
         # Берем ключевые предложения
         summary = []
+        summary.append(sentences[0])  # первое
 
-        # Первое предложение (обычно введение)
-        if sentences:
-            summary.append(sentences[0])
-
-        # Предложение из середины (основная мысль)
         if len(sentences) >= 3:
-            mid_idx = len(sentences) // 2
-            summary.append(sentences[mid_idx])
+            mid = len(sentences) // 2
+            summary.append(sentences[mid])  # среднее
 
-        # Последнее предложение (заключение)
-        if len(sentences) >= 2:
-            summary.append(sentences[-1])
+        summary.append(sentences[-1])  # последнее
 
         return '. '.join(summary) + '.'
 
+    def denoise_audio(self, audio_path):
+        """Простое шумоподавление через ffmpeg"""
+        denoised = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        denoised.close()
+
+        cmd = [
+            'ffmpeg',
+            '-i', audio_path,
+            '-af', 'afftdn=nf=-25',  # Фильтр шумоподавления
+            '-y',
+            denoised.name
+        ]
+
+        subprocess.run(cmd, capture_output=True)
+        return denoised.name
+
     def extract_keywords(self, text, top_n=10):
         """Извлечение ключевых слов"""
-        # Стоп-слова для русского языка
-        stop_words = {
-            'и', 'в', 'на', 'с', 'по', 'для', 'это', 'как', 'то',
-            'что', 'не', 'но', 'а', 'из', 'у', 'за', 'о', 'от', 'до',
-            'мы', 'вы', 'он', 'она', 'они', 'к', 'при', 'так', 'все',
-            'еще', 'даже', 'где', 'там', 'тут', 'когда', 'потом', 'зачем',
-            'потому', 'поэтому', 'который', 'которая', 'которые', 'чтобы',
-            'можно', 'нужно', 'надо', 'будет', 'был', 'была', 'были',
-            'очень', 'такой', 'этот', 'эта', 'эти'
-        }
+        stop_words = {'и', 'в', 'на', 'с', 'по', 'для', 'это', 'как', 'то',
+                      'что', 'не', 'но', 'а', 'из', 'у', 'за', 'о', 'от', 'до',
+                      'мы', 'вы', 'он', 'она', 'они', 'к', 'при', 'так', 'все'}
 
-        # Находим все слова (только русские, минимум 4 буквы)
         words = re.findall(r'[а-яёА-ЯЁ]{4,}', text.lower())
-
-        # Убираем стоп-слова
         filtered = [w for w in words if w not in stop_words]
-
-        # Считаем частоту
         word_freq = Counter(filtered)
 
-        # Берем топ
-        keywords = [word for word, count in word_freq.most_common(top_n)]
-
-        return keywords
+        return [word for word, count in word_freq.most_common(top_n)]
 
     def process_file(self, file_path):
         """Полная обработка файла"""
-        temp_files = []  # Для временных файлов
+        temp_files = []
 
         try:
-            # Проверяем существование файла
-            if not os.path.exists(file_path):
-                raise Exception(f"Файл не найден: {file_path}")
-
             logger.info(f"📁 Начало обработки: {file_path}")
 
-            # 1. Извлечение аудио (если нужно)
-            audio_path = self.extract_audio(file_path)
-            if audio_path != file_path:
-                temp_files.append(audio_path)
+            # Определяем тип файла
+            is_video = file_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))
+            is_audio = file_path.lower().endswith(('.mp3', '.wav', '.ogg', '.m4a'))
 
-            # 2. Распознавание речи
+            # Извлекаем аудио если это видео
+            if is_video:
+                logger.info("🎬 Это видео, извлекаем аудио...")
+                audio_path = self.extract_audio_from_video(file_path)
+                temp_files.append(audio_path)
+            elif is_audio:
+                logger.info("🎵 Это аудио, обрабатываем напрямую")
+                audio_path = file_path
+            else:
+                raise Exception("Неподдерживаемый формат файла")
+
+            # Распознаем речь
             transcript, segments = self.transcribe(audio_path)
 
             if not transcript:
-                raise Exception("Не удалось распознать речь")
+                raise Exception("Речь не распознана")
 
-            # 3. Создание конспекта
+            # Создаем конспект
             summary = self.summarize_text(transcript)
-
-            # 4. Извлечение ключевых слов
             keywords = self.extract_keywords(transcript)
 
-            # 5. Подсчет статистики
+            # Статистика
             words_count = len(transcript.split())
             duration = segments[-1]['end'] if segments else 0
             minutes = int(duration // 60)
             seconds = int(duration % 60)
 
-            # Формируем результат
             result = {
                 'transcript': transcript,
                 'summary': summary,
@@ -209,24 +194,23 @@ class MediaSummarizer:
                 'duration_str': f"{minutes} мин {seconds} сек",
                 'stats': {
                     'words': words_count,
-                    'duration': duration,
-                    'keywords_count': len(keywords)
+                    'duration': duration
                 }
             }
 
-            logger.info(f"✅ Обработка завершена: {words_count} слов")
+            logger.info(f"✅ Готово! {words_count} слов")
             return result
 
         except Exception as e:
-            logger.error(f"❌ Ошибка обработки: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             raise
 
         finally:
-            # Удаляем временные файлы
-            for temp_file in temp_files:
+            # Чистим временные файлы
+            for f in temp_files:
                 try:
-                    if os.path.exists(temp_file):
-                        os.unlink(temp_file)
-                        logger.info(f"Удален временный файл: {temp_file}")
-                except Exception as e:
-                    logger.warning(f"Не удалось удалить {temp_file}: {e}")
+                    if os.path.exists(f):
+                        os.unlink(f)
+                        logger.info(f"🧹 Удален: {f}")
+                except:
+                    pass
