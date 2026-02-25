@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 import logging
+import re  # Добавляем для работы с регулярными выражениями
 
 # Настройка логирования
 logging.basicConfig(
@@ -69,9 +70,9 @@ def send_about(message):
     )
 
 
-@bot.message_handler(content_types=['document', 'audio', 'video'])
+@bot.message_handler(content_types=['document', 'audio', 'video', 'voice'])
 def handle_file(message):
-    """Обработка полученных файлов"""
+    """Обработка полученных файлов и голосовых сообщений"""
     if summarizer is None:
         bot.send_message(message.chat.id, "❌ Бот временно недоступен")
         return
@@ -103,6 +104,11 @@ def handle_file(message):
         file_id = message.video.file_id
         file_name = message.video.file_name or f"video_{int(time.time())}.mp4"
         file_size = message.video.file_size
+    elif message.voice:
+        file_id = message.voice.file_id
+        file_name = f"voice_{int(time.time())}.ogg"  # Голосовые в формате OGG
+        file_size = message.voice.file_size
+        logger.info(f"🎤 Получено голосовое сообщение, длительность: {message.voice.duration} сек")
     else:
         bot.send_message(chat_id, "❌ Неподдерживаемый тип файла")
         return
@@ -125,9 +131,10 @@ def handle_file(message):
         return
 
     # Отправляем подтверждение
+    file_type = "голосовое сообщение" if message.voice else "файл"
     msg = bot.send_message(
         chat_id,
-        f"✅ Файл получен: {file_name}\n⏳ Начинаю обработку..."
+        f"✅ {file_type} получено: {file_name}\n⏳ Начинаю обработку..."
     )
 
     # Устанавливаем состояние "в обработке"
@@ -183,15 +190,72 @@ def handle_file(message):
         # Отправляем результат
         bot.send_message(chat_id, response, parse_mode='HTML')
 
-        # Создаем файл с полным текстом
+        # ========== УЛУЧШЕННОЕ ФОРМАТИРОВАНИЕ ТЕКСТОВОГО ФАЙЛА ==========
+        # Создаем красивый текстовый файл с абзацами
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
                                          delete=False, suffix='.txt') as f:
+
+            # Заголовок
+            f.write("=" * 60 + "\n")
             f.write("ПОЛНЫЙ ТРАНСКРИПТ\n")
-            f.write("=" * 50 + "\n\n")
-            f.write(result['transcript'])
-            f.write(f"\n\n{'=' * 50}\n")
-            f.write(f"КЛЮЧЕВЫЕ СЛОВА: {', '.join(result['keywords'])}")
+            f.write("=" * 60 + "\n\n")
+
+            # Разбиваем текст на предложения
+            sentences = re.split(r'[.!?]+', result['transcript'])
+            sentences = [s.strip() for s in sentences if s.strip()]
+
+            # Группируем предложения в абзацы (по 3-5 предложений)
+            paragraph = []
+            paragraph_size = 0
+
+            for i, sentence in enumerate(sentences, 1):
+                paragraph.append(sentence)
+                paragraph_size += 1
+
+                # Создаем новый абзац каждые 3-5 предложений
+                if paragraph_size >= 3 or i % 3 == 0 or i == len(sentences):
+                    if paragraph:
+                        # Соединяем предложения в абзац
+                        paragraph_text = ". ".join(paragraph) + "."
+
+                        # Разбиваем длинные абзацы на строки (макс 80 символов)
+                        words = paragraph_text.split()
+                        line = []
+                        line_length = 0
+
+                        for word in words:
+                            if line_length + len(word) + 1 <= 80:
+                                line.append(word)
+                                line_length += len(word) + 1
+                            else:
+                                if line:
+                                    f.write("   " + " ".join(line) + "\n")
+                                line = [word]
+                                line_length = len(word) + 1
+
+                        if line:
+                            f.write("   " + " ".join(line) + "\n")
+
+                        f.write("\n")  # Пустая строка между абзацами
+                        paragraph = []
+                        paragraph_size = 0
+
+            # Ключевые слова
+            f.write("\n" + "=" * 60 + "\n")
+            f.write("КЛЮЧЕВЫЕ СЛОВА:\n")
+            f.write("=" * 60 + "\n")
+
+            # Выводим ключевые слова в 3 колонки
+            keywords = result['keywords']
+            for i in range(0, len(keywords), 3):
+                row = keywords[i:i + 3]
+                # Дополняем пустыми строками до 3 элементов
+                while len(row) < 3:
+                    row.append("")
+                f.write(f"   {row[0]:<20} {row[1]:<20} {row[2]:<20}\n")
+
             transcript_path = f.name
+        # ========== КОНЕЦ УЛУЧШЕННОГО ФОРМАТИРОВАНИЯ ==========
 
         # Отправляем файл
         with open(transcript_path, 'rb') as f:
